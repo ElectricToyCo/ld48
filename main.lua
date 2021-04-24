@@ -14,6 +14,14 @@ function randInt( a, b )
 	return math.floor( randInRange( a, b ))
 end
 
+function degreesToRadians( deg )
+	return deg / 180.0 * math.pi
+end
+
+function radiansToDegrees( rad )
+	return rad / math.pi * 180.0
+end
+
 function randomElement( tab )
 	local n = #tab
 	if n == 0 then return nil end
@@ -202,6 +210,8 @@ screen_size( 448, 252 )
 -- GLOBALS
 
 local WHITE = 0xFFFFFFFF
+local YELLOW = 0xFFE8C170
+local YELLOW_ORANGE = 0xFFDE9E41
 
 local SPRITE_SHEET_PIXELS_X = 512
 local PIXELS_PER_TILE = 16
@@ -498,16 +508,17 @@ function range( from, to, step )
 	return arr
 end
 
-function floatTermsToColor( r, g, b )
+function floatTermsToColor( r, g, b, a )
 
 	function term( x )
 		return math.floor( x * 0xFF )
 	end
 
-	return 0xFF000000 | ( term( r ) << 16 ) | ( term( g ) << 8 ) | term( b )
+	return ( term( a ) << 24 ) | ( term( r ) << 16 ) | ( term( g ) << 8 ) | term( b )
 end
 
 function colorToFloatTerms( color )
+	local a = ( color & 0xFF000000 ) >> 24
 	local r = ( color & 0x00FF0000 ) >> 16
 	local g = ( color & 0x0000FF00 ) >> 8
 	local b = ( color & 0x000000FF ) >> 0
@@ -516,14 +527,14 @@ function colorToFloatTerms( color )
 		return x / 0xFF
 	end
 
-	return term( r ), term( g ), term( b )
+	return term( r ), term( g ), term( b ), term( a )
 end
 
 function colorLerp( a, b, alpha )
-	local ar, ag, ab = colorToFloatTerms( a )
-	local br, bg, bb = colorToFloatTerms( b )
+	local ar, ag, ab, aa = colorToFloatTerms( a )
+	local br, bg, bb, ba = colorToFloatTerms( b )
 
-	return floatTermsToColor( lerp( ar, br, alpha ), lerp( ag, bg, alpha ), lerp( ab, bb, alpha ) )
+	return floatTermsToColor( lerp( ar, br, alpha ), lerp( ag, bg, alpha ), lerp( ab, bb, alpha ), lerp( aa, ba, alpha ) )
 end
 
 -- Game systems
@@ -560,6 +571,9 @@ function playerInputWalking(player)
 			playerEnterShootingState()
 		elseif not playerHasAmmo() then
 			world.flashAmmoStartTime = realNow()
+			world.flashAmmoDuration = 0.15
+			world.flashAmmoColor = YELLOW
+			-- sfxm TODO
 		end
 	end
 
@@ -600,6 +614,41 @@ end
 
 local PLAYER_DRAG = 0.35
 local PLAYER_ACCEL_PER_THRUST = 0.75
+local PLAYER_ANGLE_PER_THRUST = 0.75
+local PLAYER_ANGLE_DRAG = 0.35
+local PLAYER_ARM_OFFSET_X = 0
+local PLAYER_ARM_OFFSET_Y = -20
+local PLAYER_ARM_LENGTH = 15
+local PLAYER_MAX_BULLET_THROW_LENGTH = 400
+
+function playerShoulderPosition()
+	return vec2:new( world.player.x + PLAYER_ARM_OFFSET_X, 0 + PLAYER_ARM_OFFSET_Y )
+end
+
+function playerArmNorm()
+	local armNorm = vec2:new( 1.0, 0.0 )
+	armNorm:rotate( degreesToRadians( world.player.aimAngle ))
+	return armNorm
+end
+
+function playerGunTangent()
+	local armNorm = playerArmNorm()
+	armNorm:rotate( math.pi * 0.5 )
+	return armNorm
+end
+
+function playerGunPos()
+	local shoulderPosition = playerShoulderPosition()
+	local armOffset = playerArmNorm() * PLAYER_ARM_LENGTH
+	return shoulderPosition + armOffset
+end
+
+function playerFarBulletPos()
+	local shoulderPosition = playerShoulderPosition()
+	local farOffset = playerArmNorm() * PLAYER_MAX_BULLET_THROW_LENGTH
+	return shoulderPosition + farOffset
+end
+
 function playerUpdateSimulation( player )
 
 	player.velX = player.velX + player.thrustX * PLAYER_ACCEL_PER_THRUST
@@ -609,6 +658,16 @@ function playerUpdateSimulation( player )
 	if player.state ~= 'initial' then
 		player.x = math.max( world.viewX + 6, player.x )
 	end
+
+	player.aimAngleVel = player.aimAngleVel + player.aimAngleThrust * PLAYER_ANGLE_PER_THRUST
+	player.aimAngleVel = player.aimAngleVel - ( player.aimAngleVel * PLAYER_ANGLE_DRAG )
+	player.aimAngle = player.aimAngle + player.aimAngleVel
+	player.aimAngle = clamp( player.aimAngle, -90, 5 )
+	
+end
+
+function isAmmoSpinning()
+	return world.player.ammoSpinStartTime ~= nil
 end
 
 function playerUpdate( player )
@@ -631,6 +690,15 @@ function playerUpdate( player )
 
 	playerUpdateSimulation( player )
 
+	-- update ammo spin mechanics
+	if world.player.ammoSpinStartTime ~= nil then
+		local blurT = now() - world.player.ammoSpinStartTime
+		if blurT >= world.player.ammoSpinDuration then
+			world.player.ammoSpinStartTime = nil
+			world.player.ammoSpinDuration = nil
+		end
+	end
+
 	local cleanupFunction = stateCleanupFunctions[ player.state ]
 	if cleanupFunction then
 		cleanupFunction( player )
@@ -646,7 +714,8 @@ function playerReload()
 
 	-- sfxm TODO
 	world.player.numLoadedBullets = MAX_LOADED_BULLETS
-	-- TODO cooldown
+	world.player.ammoSpinStartTime = now()
+	world.player.ammoSpinDuration = 0.65
 end
 
 function playerDurationInState()
@@ -665,15 +734,26 @@ function playerEnterShootingState()
 	local player = world.player
 	player.state = 'shooting'
 	player.stateStartTime = now()
+
+	-- sfxm TODO
 end
 
 function playerLeaveShootingState()
 	world.player.state = 'walking'
+	world.player.stateStartTime = now()
 end
 
 function playerActuallyShoot( player )
 	-- TODO
 	world.player.numLoadedBullets = world.player.numLoadedBullets - 1
+
+	world.player.ammoSpinStartTime = now()
+	world.player.ammoSpinDuration = 0.15
+
+	world.flashAmmoStartTime = realNow()
+	world.flashAmmoDuration = 0.65
+	world.flashAmmoColor = 0xff404000
+
 
 	-- sfxm TODO
 
@@ -700,11 +780,11 @@ function playerHasAmmo()
 end
 
 function playerMayShoot()
-	return playerHasAmmo()
+	return playerHasAmmo() and not isAmmoSpinning()
 end
 
 function playerMayReload()
-	return world.player.numLoadedBullets < MAX_LOADED_BULLETS
+	return not isAmmoSpinning() and world.player.numLoadedBullets < MAX_LOADED_BULLETS
 end
 
 function viewUpdate()
@@ -797,82 +877,170 @@ function drawFloor()
 	end
 end
 
-function drawUI()
-	function drawHUD()
-		function drawControlHintArea()
-			local ARROW_HINT_X = screen_wid() - 16 * 6
-			local BUTTONS_TOP_Y = screen_hgt() - 64
-			local BUTTON_LABELS_TOP_Y = BUTTONS_TOP_Y + 34
-			local BUTTON_Z_HINT_X = 16 * 6
-			local BUTTON_X_HINT_X = 16 * 12
+function drawRipplingLine( time, timeLengthScale, a, b, color, thickness, rippleFunc )
+	time = time or realNow()
+	timeLengthScale = timeLengthScale == nil and 10.0 or timeLengthScale
 
-			function drawAmmoDisplay()
-				local ammoAdditive = world.flashAmmoStartTime ~= nil and flashOnce( 0.15, 0xFFFFFF00, 0, realNow() - world.flashAmmoStartTime ) or 0
-
-				local left = 8
-				local top = 8
-				spr( spriteIndex( 9, 28 ), left, top, 4, 4, false, false, WHITE, ammoAdditive )		-- TODO blurring
-
-				local centerX = left + PIXELS_PER_TILE
-				local centerY = top + PIXELS_PER_TILE
-				local RADIANS_PER_BULLET = math.pi * 2 / ( MAX_LOADED_BULLETS )
-				local SPOKE_LENGTH = 14
-
-				for i = 0, world.player.numLoadedBullets - 1 do
-					local spokeX = -math.sin( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
-					local spokeY = -math.cos( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
-					spr( spriteIndex( 9, 26 ), centerX + spokeX, centerY + spokeY, 2, 2, false, false, WHITE, ammoAdditive )
-				end
-			end
-
-			function drawHealthDisplay()
-				local right = screen_wid() - 48
-				for i = 0, MAX_PLAYER_HEALTH - 1 do
-					local spriteColor = i < world.player.health and 0xFF000000 or 0x80808080
-					spr( spriteIndex( 9, 24 ), right - 32 * i, 8, 2, 2, false, false, WHITE, spriteColor )
-				end
-			end
-
-			local playerStateDrawFunctions = {
-				initial = function()
-				end,
-				walking = function()
-					drawAmmoDisplay()
-					drawHealthDisplay()
-					local shootColor = playerMayShoot() and WHITE or 0xFF808080
-					local reloadColor = playerMayReload() and WHITE or 0xFF808080
-
-					spr( spriteIndex( 0, 29 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
-					spr( spriteIndex( 11, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 2 ) -- ARROW KEYS
-					spr( spriteIndex( 5, 24 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, shootColor ) -- BUTTON Z
-					spr( spriteIndex( 8, 20 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, shootColor ) -- BUTTON Z LABEL
-					spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, reloadColor ) -- BUTTON X
-					spr( spriteIndex( 8, 23 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, reloadColor ) -- BUTTON X LABEL
-				end,
-				shooting = function()
-					-- Did the user release the shoot button too fast?
-					local shootReleaseDelinquent = ( not btn( 4 )) and playerIsShootingStillLocked()
-					local shootAdditive = shootReleaseDelinquent and flash( 4, WHITE, 0, playerDurationInState() ) or 0
-
-					drawAmmoDisplay()
-					drawHealthDisplay()
-					spr( spriteIndex( 0, 30 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
-					spr( spriteIndex( 15, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 3 ) -- ARROW KEYS
-					spr( spriteIndex( 5, 28 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, WHITE, shootAdditive ) -- BUTTON Z
-					spr( spriteIndex( 8, 21 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, WHITE, shootAdditive ) -- BUTTON Z LABEL
-					spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON X
-					spr( spriteIndex( 8, 22 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON X LABEL
-				end,
-				ending = function()
-				end
-			}
-			playerStateDrawFunctions[ world.player.state ]()
-		end
-
-		drawControlHintArea()
+	rippleFunc = rippleFunc or function( t )
+		local mt = t * math.pi * 2.0
+		return math.sin( mt ) * math.sin( mt * 3 ) * math.sin( mt * 0.3 ) * math.sin( mt * 7 ) * 0.4
 	end
 
-	drawHUD()
+	local delta = b - a
+	local norm = delta:normal()
+	local len = delta:length()
+
+
+	function drawSegment( s, t )
+		local u = a + norm * ( s * len )
+		local v = a + norm * ( t * len )
+		line( u.x, u.y, v.x, v.y, color, thickness )
+	end
+
+	local drawing = true
+	local lastT = nil
+	local t = 0.0
+	while t < 1.0 do
+		if drawing and lastT ~= nil then
+			drawSegment( lastT, t )
+		end
+
+		local segmentLength = math.max( 0.05, math.abs( rippleFunc(( time + t ) * timeLengthScale )))
+
+		lastT = t
+		t = clamp( lastT + segmentLength, 0.0, 1.0 )
+		drawing = not drawing
+	end
+end
+
+function drawInWorldUI()
+
+	function drawShootingGunLine()
+		local gun = playerGunPos()
+		local far = playerFarBulletPos()
+		drawRipplingLine( 23 + realNow() * 0.15, 0.1, gun, far, colorLerp( YELLOW_ORANGE, 0, 0.75 ), 1 )
+		drawRipplingLine( 10 + realNow() * 0.19, 0.13, gun, far, colorLerp( YELLOW, 0, 0.25 ), 0.5 )
+	end
+
+	function drawWalkingUI()
+		if world.player.stateStartTime ~= nil then
+			local thinColor = flashOnce( 1.2, WHITE, 0x00000000, playerDurationInState() )
+			local thickColor = flashOnce( 0.65, 0xFFcccccc, 0x00000000, playerDurationInState() )
+			local gun = playerGunPos()
+			local far = playerFarBulletPos()
+			line( gun.x, gun.y, far.x, far.y, thickColor, 2 )
+			line( gun.x, gun.y, far.x, far.y, thinColor, 0.5 )
+		end
+	end
+
+	function drawShootingUI()
+		drawShootingGunLine()
+	end
+
+	local stateFunctions = {
+		walking = drawWalkingUI,
+		shooting = drawShootingUI,
+	}
+
+	local func = stateFunctions[ world.player.state ]
+	if func ~= nil then func() end
+end
+
+function drawHUD()
+	function drawControlHintArea()
+		local ARROW_HINT_X = screen_wid() - 16 * 6
+		local BUTTONS_TOP_Y = screen_hgt() - 64
+		local BUTTON_LABELS_TOP_Y = BUTTONS_TOP_Y + 34
+		local BUTTON_Z_HINT_X = 16 * 6
+		local BUTTON_X_HINT_X = 16 * 12
+
+		function drawAmmoDisplay()
+			local ammoAdditive = world.flashAmmoStartTime ~= nil and flashOnce( world.flashAmmoDuration, world.flashAmmoColor, 0, realNow() - world.flashAmmoStartTime ) or 0
+
+			local left = 8
+			local top = 8
+
+			local ammoSpinRads = 0;
+
+			if world.player.ammoSpinStartTime ~= nil then
+				local AMMO_SPIN_FRAMES_PER_SECOND = 16
+
+				local ammoSpinT = now() - world.player.ammoSpinStartTime
+
+				local blurFrames = {
+					spriteIndex( 12, 20 ),
+					spriteIndex( 16, 20 ),
+					spriteIndex( 20, 20 ),
+				}
+
+				local frameIndex = math.floor( wrap( ammoSpinT * AMMO_SPIN_FRAMES_PER_SECOND, 0, ( #blurFrames )))
+				local frame = blurFrames[ frameIndex + 1 ]
+
+				local ammoSpinDegrees = frameIndex * -30.0 + 90 - 15
+				ammoSpinRads = degreesToRadians( ammoSpinDegrees )
+
+				spr( frame, left, top, 4, 4, false, false, WHITE, ammoAdditive )
+			else
+				spr( spriteIndex( 9, 28 ), left, top, 4, 4, false, false, WHITE, ammoAdditive )
+			end
+		
+			local centerX = left + PIXELS_PER_TILE
+			local centerY = top + PIXELS_PER_TILE
+			local RADIANS_PER_BULLET = math.pi * 2 / ( MAX_LOADED_BULLETS )
+			local SPOKE_LENGTH = 14
+
+			for i = 0, world.player.numLoadedBullets - 1 do
+				local spokeX = -math.sin( ammoSpinRads + i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
+				local spokeY = -math.cos( ammoSpinRads + i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
+				spr( spriteIndex( 9, 26 ), centerX + spokeX, centerY + spokeY, 2, 2, false, false, WHITE, ammoAdditive )
+			end
+		end
+
+		function drawHealthDisplay()
+			local right = screen_wid() - 48
+			for i = 0, MAX_PLAYER_HEALTH - 1 do
+				local spriteColor = i < world.player.health and 0xFF000000 or 0x80808080
+				spr( spriteIndex( 9, 24 ), right - 32 * i, 8, 2, 2, false, false, WHITE, spriteColor )
+			end
+		end
+
+		local playerStateDrawFunctions = {
+			initial = function()
+			end,
+			walking = function()
+				drawAmmoDisplay()
+				drawHealthDisplay()
+				local shootColor = playerMayShoot() and WHITE or 0xFF808080
+				local reloadColor = playerMayReload() and WHITE or 0xFF808080
+
+				spr( spriteIndex( 0, 29 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
+				spr( spriteIndex( 11, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 2 ) -- ARROW KEYS
+				spr( spriteIndex( 5, 24 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, shootColor ) -- BUTTON Z
+				spr( spriteIndex( 8, 20 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, shootColor ) -- BUTTON Z LABEL
+				spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, reloadColor ) -- BUTTON X
+				spr( spriteIndex( 8, 23 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, reloadColor ) -- BUTTON X LABEL
+			end,
+			shooting = function()
+				-- Did the user release the shoot button too fast?
+				local shootReleaseDelinquent = ( not btn( 4 )) and playerIsShootingStillLocked()
+				local shootAdditive = shootReleaseDelinquent and flash( 4, WHITE, 0, playerDurationInState() ) or 0
+
+				drawAmmoDisplay()
+				drawHealthDisplay()
+				spr( spriteIndex( 0, 30 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
+				spr( spriteIndex( 15, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 3 ) -- ARROW KEYS
+				spr( spriteIndex( 5, 28 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, WHITE, shootAdditive ) -- BUTTON Z
+				spr( spriteIndex( 8, 21 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, WHITE, shootAdditive ) -- BUTTON Z LABEL
+				spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON X
+				spr( spriteIndex( 8, 22 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON X LABEL
+			end,
+			ending = function()
+			end
+		}
+		playerStateDrawFunctions[ world.player.state ]()
+	end
+
+	drawControlHintArea()
 end
 
 function draw()
@@ -884,11 +1052,12 @@ function draw()
 	playerDraw( world.player )
 
 	-- Draw UI
-	camera( 0, 0 )
-	drawUI()
+	drawInWorldUI()
 
+	camera( 0, 0 )
+	drawHUD()
 
 	-- DEBUG
-	camera( 0, 0 )
+	camera( -8, 0 )
 	drawDebug()
 end

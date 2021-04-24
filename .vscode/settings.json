@@ -42,7 +42,8 @@
         "touchupx",
         "touchx",
         "show_controls_guides",
-        "cls"
+        "cls",
+        "line"
     ],
     "Lua.diagnostics.disable": [
         "unused-local",
