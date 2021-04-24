@@ -37,20 +37,6 @@ function tableStringValues( tab )
 	return str
 end
 
-function stringify( o )
-	if type( o ) == 'table' then
-		return saveTable( o )
-	elseif type( o ) == 'string' then
-		return '"' .. o .. '"'
-	elseif type( o ) == 'boolean' then
-		return boolToString( o )
-	elseif type( o ) == 'function' then
-		return '<function>'
-	else
-		return '' .. o
-	end
-end
-
 function tableFind( tab, element )
     for index, value in pairs(tab) do
         if value == element then
@@ -179,18 +165,11 @@ end
 
 -- Configuration
 
-support_virtual_trackball( true )
 text_scale( 1 )
 filter_mode( "Nearest" )
 
-screen_size( 220, 0 )
-
-local WHITE = 0xFFE3E0F2
-local YELLOW = 0xFFDBC762
-local BRIGHT_RED = 0xFFC23324
-local LIGHT_GRAY = 0xFFB0B8BF
-local BRIGHT_BLUE = 0xFF0466c2
-
+-- screen_size( 480, 270 )
+screen_size( 448, 252 )
 
 -- GLOBALS
 
@@ -201,9 +180,6 @@ local TILES_X = SPRITE_SHEET_PIXELS_X // PIXELS_PER_TILE
 local ACTOR_DRAW_MARGIN = PIXELS_PER_TILE
 
 sprite_size( PIXELS_PER_TILE )
-
-local WORLD_SIZE_TILES = 32
-local WORLD_SIZE_PIXELS = WORLD_SIZE_TILES * PIXELS_PER_TILE
 
 function spriteIndex( x, y )
 	return y * TILES_X + x
@@ -520,10 +496,122 @@ function colorLerp( a, b, alpha )
 	return floatTermsToColor( lerp( ar, br, alpha ), lerp( ag, bg, alpha ), lerp( ab, bb, alpha ) )
 end
 
+-- Game systems
+
+local VIEW_LEFT_OFFSET = 80
+local GROUND_VIEW_OFFSET_Y = 180
+local VIEW_LERP = 0.4
+
+function playerInputWalkAutomatic(player)
+	player.thrustX = 1
+end
+
+function playerInputInitial(player)
+	playerInputWalkAutomatic(player)
+end
+
+function playerCleanupInitial(player)
+	if player.x >= VIEW_LEFT_OFFSET - 4 then
+		player.state = 'walking'
+	end
+end
+
+
+function playerInputWalking(player)
+	if btn( 0 ) then
+		player.thrustX = player.thrustX - 1
+	end
+	if btn( 1 ) then
+		player.thrustX = player.thrustX + 1
+	end
+end
+
+function playerInputShooting(player)
+
+	if btn( 2 ) then
+		player.aimAngleThrust = player.aimAngleThrust - 1
+	end
+	if btn( 3 ) then
+		player.aimAngleThrust = player.aimAngleThrust + 1
+	end
+end
+
+function playerInputEnding(player)
+	playerInputWalkAutomatic(player)
+end
+
+
+local PLAYER_DRAG = 0.5
+local PLAYER_ACCEL_PER_THRUST = 1.75
+function playerUpdateSimulation( player )
+
+	player.velX = player.velX + player.thrustX * PLAYER_ACCEL_PER_THRUST
+	player.velX = player.velX - ( player.velX * PLAYER_DRAG )
+	player.x = player.x + player.velX
+
+	if player.state ~= 'initial' then
+		player.x = math.max( world.viewX + 6, player.x )
+	end
+end
+
+function playerUpdate( player )
+	local stateInputFunctions = {
+		initial  = playerInputInitial,
+		walking  = playerInputWalking,
+		shooting = playerInputShooting,
+		ending   = playerInputEnding,
+	}
+
+	local stateCleanupFunctions = {
+		initial  = playerCleanupInitial,
+	}
+
+	local inputFunction = stateInputFunctions[ player.state ]
+
+	player.thrustX = 0
+	player.aimAngleThrust = 0
+	inputFunction( player )
+
+	playerUpdateSimulation( player )
+
+	local cleanupFunction = stateCleanupFunctions[ player.state ]
+	if cleanupFunction then
+		cleanupFunction( player )
+	end
+end
+
+function viewUpdate()
+	-- TODO lerp
+	world.viewX = lerp( world.viewX, math.max( world.viewX, world.player.x - VIEW_LEFT_OFFSET ), VIEW_LERP )
+end
+
+function createWorld()
+	local world = {
+		viewX = 0,
+		player = {
+			state = 'initial',
+			x = -64,
+			velX = 0,
+			thrustX = 0,
+			aimAngle = 0,
+			aimAngleVel = 0,
+			aimAngleThrust = 0,
+		}
+	}
+
+	return world
+end
+
+world = createWorld()
+
 -- UPDATING!!!
 
 function update()
 	realTicks = realTicks + 1
+	ticks = ticks + 1
+
+	playerUpdate( world.player )
+	viewUpdate()
 end
 
 
@@ -551,8 +639,42 @@ function printCentered( text, x, y, color, font, printFn )
 	( printFn or print )( text, x - #text * 4, y, color, font )
 end
 
+function playerDraw( player )
+	rectfill( player.x, -30, player.x + 10, 0 )
+end
+
+function viewBounds()
+	return {
+		left = world.viewX,
+		top = -GROUND_VIEW_OFFSET_Y,
+		right = world.viewX + screen_wid(),
+		bottom = -GROUND_VIEW_OFFSET_Y + screen_hgt(),
+	}
+end
+
+local PIXELS_PER_FLOOR_TILE = PIXELS_PER_TILE * 8
+function drawFloor()
+	local worldSpaceViewBounds = viewBounds()
+	
+	-- quantize
+	local tileLeft = math.floor( worldSpaceViewBounds.left // PIXELS_PER_FLOOR_TILE )
+	local tileRigt = math.floor( worldSpaceViewBounds.right // PIXELS_PER_FLOOR_TILE )
+
+	local floorSpriteUL = spriteIndex( 0, 16 )
+	for x = tileLeft, tileRigt do
+		spr( floorSpriteUL, x * PIXELS_PER_FLOOR_TILE, -36, 8, 8 )
+	end
+end
+
 function draw()
 	cls( 0xff000040 )
+
+	-- Draw world
+	camera( world.viewX, -GROUND_VIEW_OFFSET_Y )
+	drawFloor()
+	playerDraw( world.player )
+
+	-- DEBUG
 	camera( 0, 0 )
 	drawDebug()
 end
