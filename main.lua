@@ -173,6 +173,8 @@ screen_size( 448, 252 )
 
 -- GLOBALS
 
+local WHITE = 0xFFFFFFFF
+
 local SPRITE_SHEET_PIXELS_X = 512
 local PIXELS_PER_TILE = 16
 local TILES_X = SPRITE_SHEET_PIXELS_X // PIXELS_PER_TILE
@@ -206,7 +208,7 @@ local saturation_ = 1
 local color_multiplied_r = 1
 local color_multiplied_g = 1
 local color_multiplied_b = 1
-local bevel_ = 0.20
+local bevel_ = 0
 
 local barrel_smoothed = barrel_
 local bloom_intensity_smoothed = bloom_intensity_
@@ -500,7 +502,7 @@ end
 
 local VIEW_LEFT_OFFSET = 80
 local GROUND_VIEW_OFFSET_Y = 180
-local VIEW_LERP = 0.4
+local VIEW_LERP = 0.05
 
 function playerInputWalkAutomatic(player)
 	player.thrustX = 1
@@ -511,7 +513,7 @@ function playerInputInitial(player)
 end
 
 function playerCleanupInitial(player)
-	if player.x >= VIEW_LEFT_OFFSET - 4 then
+	if player.x >= VIEW_LEFT_OFFSET - 6 then
 		player.state = 'walking'
 	end
 end
@@ -524,6 +526,14 @@ function playerInputWalking(player)
 	if btn( 1 ) then
 		player.thrustX = player.thrustX + 1
 	end
+
+	if btnp( 4 ) then
+		playerEnterShootingState()
+	end
+
+	if btnp( 5 ) then
+		playerReload()
+	end
 end
 
 function playerInputShooting(player)
@@ -534,6 +544,14 @@ function playerInputShooting(player)
 	if btn( 3 ) then
 		player.aimAngleThrust = player.aimAngleThrust + 1
 	end
+
+	if not btn( 4 ) then
+		playerShoot()
+	end
+
+	if btnp( 5 ) then		-- TODO minimum timeout
+		playerCancelShootingState()
+	end
 end
 
 function playerInputEnding(player)
@@ -541,8 +559,8 @@ function playerInputEnding(player)
 end
 
 
-local PLAYER_DRAG = 0.5
-local PLAYER_ACCEL_PER_THRUST = 1.75
+local PLAYER_DRAG = 0.35
+local PLAYER_ACCEL_PER_THRUST = 0.75
 function playerUpdateSimulation( player )
 
 	player.velX = player.velX + player.thrustX * PLAYER_ACCEL_PER_THRUST
@@ -580,10 +598,69 @@ function playerUpdate( player )
 	end
 end
 
+local MAX_LOADED_BULLETS = 4
+
+function playerReload()
+	if not playerMayReload() then
+		return
+	end
+
+	-- sfxm TODO
+	world.player.numLoadedBullets = MAX_LOADED_BULLETS
+	-- TODO cooldown
+end
+
+function playerEnterShootingState()
+	if not playerMayShoot() then
+		return
+	end
+
+	local player = world.player
+	player.state = 'shooting'
+end
+
+function playerLeaveShootingState()
+	world.player.state = 'walking'
+end
+
+function playerActuallyShoot( player )
+	-- TODO
+	world.player.numLoadedBullets = world.player.numLoadedBullets - 1
+
+	-- sfxm TODO
+
+	if world.player.numLoadedBullets == 0 then
+		-- sfxm TODO
+	end
+end
+
+function playerShoot()
+	if world.player.state ~= 'shooting' then return end
+	if playerMayShoot() then
+		playerActuallyShoot( world.player )
+	end
+	playerLeaveShootingState()
+end
+
+function playerCancelShootingState()
+	if world.player.state ~= 'shooting' then return end
+	playerLeaveShootingState()
+end
+
+function playerMayShoot()
+	return world.player.numLoadedBullets > 0
+end
+
+function playerMayReload()
+	return world.player.numLoadedBullets < MAX_LOADED_BULLETS
+end
+
 function viewUpdate()
 	-- TODO lerp
 	world.viewX = lerp( world.viewX, math.max( world.viewX, world.player.x - VIEW_LEFT_OFFSET ), VIEW_LERP )
 end
+
+local MAX_PLAYER_HEALTH = 3
 
 function createWorld()
 	local world = {
@@ -596,6 +673,8 @@ function createWorld()
 			aimAngle = 0,
 			aimAngleVel = 0,
 			aimAngleThrust = 0,
+			health = MAX_PLAYER_HEALTH - 1,		-- TODO
+			numLoadedBullets = MAX_LOADED_BULLETS - 1,	-- TODO
 		}
 	}
 
@@ -666,6 +745,78 @@ function drawFloor()
 	end
 end
 
+function drawUI()
+	function drawHUD()
+		function drawControlHintArea()
+			local ARROW_HINT_X = screen_wid() - 16 * 6
+			local BUTTONS_TOP_Y = screen_hgt() - 64
+			local BUTTON_LABELS_TOP_Y = BUTTONS_TOP_Y + 34
+			local BUTTON_Z_HINT_X = 16 * 6
+			local BUTTON_X_HINT_X = 16 * 12
+
+			function drawAmmoDisplay()
+				local left = 8
+				local top = 8
+				spr( spriteIndex( 9, 28 ), left, top, 4, 4 )		-- TODO blurring
+
+				local centerX = left + PIXELS_PER_TILE
+				local centerY = top + PIXELS_PER_TILE
+				local RADIANS_PER_BULLET = math.pi * 2 / ( MAX_LOADED_BULLETS )
+				local SPOKE_LENGTH = 14
+
+				for i = 0, world.player.numLoadedBullets - 1 do
+					local spokeX = -math.sin( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
+					local spokeY = -math.cos( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
+					spr( spriteIndex( 9, 26 ), centerX + spokeX, centerY + spokeY, 2 )
+				end
+			end
+
+			function drawHealthDisplay()
+				local right = screen_wid() - 48
+				for i = 0, MAX_PLAYER_HEALTH - 1 do
+					local spriteColor = i < world.player.health and 0xFF000000 or 0x80808080
+					spr( spriteIndex( 9, 24 ), right - 32 * i, 8, 2, 2, false, false, WHITE, spriteColor )
+				end
+			end
+
+			local playerStateDrawFunctions = {
+				initial = function()
+				end,
+				walking = function()
+					drawAmmoDisplay()
+					drawHealthDisplay()
+					local shootColor = playerMayShoot() and WHITE or 0xFF808080
+					local reloadColor = playerMayReload() and WHITE or 0xFF808080
+
+					spr( spriteIndex( 0, 29 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
+					spr( spriteIndex( 11, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 2 ) -- ARROW KEYS
+					spr( spriteIndex( 5, 24 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, shootColor ) -- BUTTON Z
+					spr( spriteIndex( 8, 20 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, shootColor ) -- BUTTON Z LABEL
+					spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, reloadColor ) -- BUTTON X
+					spr( spriteIndex( 8, 23 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, reloadColor ) -- BUTTON X LABEL
+				end,
+				shooting = function()
+					drawAmmoDisplay()
+					drawHealthDisplay()
+					spr( spriteIndex( 0, 30 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
+					spr( spriteIndex( 15, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 3 ) -- ARROW KEYS
+					spr( spriteIndex( 5, 28 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON Z
+					spr( spriteIndex( 8, 21 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON Z LABEL
+					spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON X
+					spr( spriteIndex( 8, 22 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON X LABEL
+				end,
+				ending = function()
+				end
+			}
+			playerStateDrawFunctions[ world.player.state ]()
+		end
+
+		drawControlHintArea()
+	end
+
+	drawHUD()
+end
+
 function draw()
 	cls( 0xff000040 )
 
@@ -673,6 +824,11 @@ function draw()
 	camera( world.viewX, -GROUND_VIEW_OFFSET_Y )
 	drawFloor()
 	playerDraw( world.player )
+
+	-- Draw UI
+	camera( 0, 0 )
+	drawUI()
+
 
 	-- DEBUG
 	camera( 0, 0 )
