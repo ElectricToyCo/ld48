@@ -6,21 +6,24 @@ Game: Into the Deep, Dark Woods
 
 # TODO
 
-- Infinite floor
-- Player movement and controls
+X Infinite floor
+X Player movement and controls
+X HUD: Health display
+X HUD: Ammo display
+X HUD: Controls display
+- Shooting initial timeout/delay
 - Bullet aiming w/ display
 - Bullet firing display
-- HUD: Health display
-- HUD: Ammo display
-- HUD: Controls display
+- Encounters, creature system
+- Player damage
+- Creature: Squirrel
+- Player death, restart
+
 - Health pickup (creatures)
 - Ammo pickup
 - Vegetation
 - Sky
 - Depth/night progression
-- Encounters, creature system
-- Player damage
-- Creature: Squirrel
 - Creature: Bird
 - Creature: Owl (attacking)
 - Creature: fox (attacking)
@@ -28,13 +31,14 @@ Game: Into the Deep, Dark Woods
 - Creature: main boss: foreshadowing
 - Creature: wolf (two damage)
 - Creature: deer (one damage, jumps; full health)
-- Player death
 - Music plays only when walking
 - Narrative, poetry, reflections
 - Tutorial elements
 - Title/Opening
 - Ending
 - Restart
+- HUD: Ammo display blur, timeout
+- Failed button press flashes (shoot, reload)
 
 # Sequence
 

@@ -138,6 +138,12 @@ function clamp( x, minimum, maximum )
 	return math.min( maximum, math.max( x, minimum ))
 end
 
+function wrap( x, minimum, maximum )
+	local a = x - minimum
+	local range = maximum - minimum
+	return minimum + ( a - range * math.floor( a / range ))
+end
+
 function proportion( x, a, b )
 	return ( x - a ) / ( b - a )
 end
@@ -161,6 +167,28 @@ end
 local realTicks = 0
 function realNow()
 	return realTicks * 1 / 60.0
+end
+
+function flash( hz, flashColor, baseColor, time, flashFunc )
+	time = time or now()
+	baseColor = baseColor == nil and 0xFF000000 or baseColor
+	flashFunc = flashFunc or function( t )
+		return 0.5 + 0.5 * math.cos( math.pi * t )
+	end
+
+	local normTime = wrap( time * hz, 0.0, 1.0 )
+	return colorLerp( baseColor, flashColor, flashFunc( normTime ) )
+end
+
+function flashOnce( duration, flashColor, baseColor, time, flashFunc )
+	time = time or now()
+	baseColor = baseColor == nil and 0xFF000000 or baseColor
+	flashFunc = flashFunc or function( t )
+		return 0.5 + 0.5 * math.cos( math.pi * t )
+	end
+
+	local normTime = clamp( time / duration, 0.0, 1.0 )
+	return colorLerp( baseColor, flashColor, flashFunc( normTime ) )
 end
 
 -- Configuration
@@ -528,12 +556,23 @@ function playerInputWalking(player)
 	end
 
 	if btnp( 4 ) then
-		playerEnterShootingState()
+		if playerMayShoot() then
+			playerEnterShootingState()
+		elseif not playerHasAmmo() then
+			world.flashAmmoStartTime = realNow()
+		end
 	end
 
 	if btnp( 5 ) then
 		playerReload()
 	end
+end
+
+local MIN_SHOOT_STATE_DURATION = 0.65
+
+function playerIsShootingStillLocked()
+	local time = playerDurationInState()
+	return time ~= nil and time < MIN_SHOOT_STATE_DURATION
 end
 
 function playerInputShooting(player)
@@ -545,7 +584,7 @@ function playerInputShooting(player)
 		player.aimAngleThrust = player.aimAngleThrust + 1
 	end
 
-	if not btn( 4 ) then
+	if not btn( 4 ) and playerDurationInState() >= MIN_SHOOT_STATE_DURATION then
 		playerShoot()
 	end
 
@@ -610,6 +649,14 @@ function playerReload()
 	-- TODO cooldown
 end
 
+function playerDurationInState()
+	if world.player.stateStartTime ~= nil then
+		return now() - world.player.stateStartTime
+	else
+		return nil
+	end
+end
+
 function playerEnterShootingState()
 	if not playerMayShoot() then
 		return
@@ -617,6 +664,7 @@ function playerEnterShootingState()
 
 	local player = world.player
 	player.state = 'shooting'
+	player.stateStartTime = now()
 end
 
 function playerLeaveShootingState()
@@ -647,8 +695,12 @@ function playerCancelShootingState()
 	playerLeaveShootingState()
 end
 
-function playerMayShoot()
+function playerHasAmmo()
 	return world.player.numLoadedBullets > 0
+end
+
+function playerMayShoot()
+	return playerHasAmmo()
 end
 
 function playerMayReload()
@@ -755,9 +807,11 @@ function drawUI()
 			local BUTTON_X_HINT_X = 16 * 12
 
 			function drawAmmoDisplay()
+				local ammoAdditive = world.flashAmmoStartTime ~= nil and flashOnce( 0.15, 0xFFFFFF00, 0, realNow() - world.flashAmmoStartTime ) or 0
+
 				local left = 8
 				local top = 8
-				spr( spriteIndex( 9, 28 ), left, top, 4, 4 )		-- TODO blurring
+				spr( spriteIndex( 9, 28 ), left, top, 4, 4, false, false, WHITE, ammoAdditive )		-- TODO blurring
 
 				local centerX = left + PIXELS_PER_TILE
 				local centerY = top + PIXELS_PER_TILE
@@ -767,7 +821,7 @@ function drawUI()
 				for i = 0, world.player.numLoadedBullets - 1 do
 					local spokeX = -math.sin( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
 					local spokeY = -math.cos( i * RADIANS_PER_BULLET ) * SPOKE_LENGTH
-					spr( spriteIndex( 9, 26 ), centerX + spokeX, centerY + spokeY, 2 )
+					spr( spriteIndex( 9, 26 ), centerX + spokeX, centerY + spokeY, 2, 2, false, false, WHITE, ammoAdditive )
 				end
 			end
 
@@ -796,12 +850,16 @@ function drawUI()
 					spr( spriteIndex( 8, 23 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, reloadColor ) -- BUTTON X LABEL
 				end,
 				shooting = function()
+					-- Did the user release the shoot button too fast?
+					local shootReleaseDelinquent = ( not btn( 4 )) and playerIsShootingStillLocked()
+					local shootAdditive = shootReleaseDelinquent and flash( 4, WHITE, 0, playerDurationInState() ) or 0
+
 					drawAmmoDisplay()
 					drawHealthDisplay()
 					spr( spriteIndex( 0, 30 ), 8, screen_hgt() - 40, 5, 1 ) -- MAIN LABEL
 					spr( spriteIndex( 15, 24 ), ARROW_HINT_X, screen_hgt() - 56, 4, 3 ) -- ARROW KEYS
-					spr( spriteIndex( 5, 28 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON Z
-					spr( spriteIndex( 8, 21 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON Z LABEL
+					spr( spriteIndex( 5, 28 ), BUTTON_Z_HINT_X, BUTTONS_TOP_Y, 2, 4, false, false, WHITE, shootAdditive ) -- BUTTON Z
+					spr( spriteIndex( 8, 21 ), BUTTON_Z_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1, false, false, WHITE, shootAdditive ) -- BUTTON Z LABEL
 					spr( spriteIndex( 7, 24 ), BUTTON_X_HINT_X, BUTTONS_TOP_Y, 2, 4 ) -- BUTTON X
 					spr( spriteIndex( 8, 22 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON X LABEL
 				end,
