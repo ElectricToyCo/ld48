@@ -484,6 +484,41 @@ function rectOverlapsPoint( rect, pos )
 	return rect.left <= pos.x and pos.x <= rect.right and rect.top <= pos.y and pos.y <= rect.bottom
 end
 
+function rectOverlapsRay( rect, rayOrig, rayDir )
+	-- project corners of rect onto ray. If all one one side or other, no collision. Else yes.
+	if rectOverlapsPoint( rect, rayOrig ) then
+		return true
+	end
+
+	local rayTangent = vec2:new( rayDir )
+	rayTangent:rotate( math.pi * 0.5 )
+
+	function pointDirFromRay( x, y )
+		local p = vec2:new( x, y ) - rayOrig
+		return {
+			forward = rayDir:dot( p ),
+			side = rayTangent:dot( p )
+		}
+	end
+
+	local signs = {
+		pointDirFromRay( rect.left, rect.top ),
+		pointDirFromRay( rect.right, rect.top ),
+		pointDirFromRay( rect.right, rect.bottom ),
+		pointDirFromRay( rect.left, rect.bottom )
+	}
+
+	local forward = signs[ 1 ].forward >= 0
+	local side = signNoZero( signs[ 1 ].side )
+	local isSplit = false
+	for _, corner in ipairs( signs ) do
+		if signNoZero( corner.side ) ~= side then isSplit = true end
+		forward = forward or corner.forward >= 0
+	end
+
+	return forward and isSplit
+end
+
 function expandContractRect( rect, expansion )
 	rect.left = rect.left - expansion
 	rect.top = rect.top - expansion
@@ -649,6 +684,44 @@ function playerFarBulletPos()
 	return shoulderPosition + farOffset
 end
 
+local PLAYER_HEIGHT = 30
+local PLAYER_WIDTH = 10
+local MAX_PLAYER_HEALTH = 3
+
+
+function playerBounds()
+	return {
+		left = world.player.x,
+		top = -PLAYER_HEIGHT,
+		right = world.player.x + PLAYER_WIDTH,
+		bottom = 0
+	}
+end
+
+function isCreatureOverlappingPlayer( creature )
+	return rectsOverlap( creatureBounds( creature ), playerBounds() )
+end
+
+function playerDie()
+	world.player.state = 'dead'
+	world.player.stateStartTime = now()
+
+	-- TODO
+end
+
+function playerTakeDamage( amount )
+	if world.player.health > 0 then
+		world.player.health = clamp( world.player.health - amount, 0, MAX_PLAYER_HEALTH )
+
+		if world.player.health <= 0 then
+			playerDie()
+		end
+
+		-- TODO sfxm()
+		-- TODO flash
+	end
+end
+
 function playerUpdateSimulation( player )
 
 	player.velX = player.velX + player.thrustX * PLAYER_ACCEL_PER_THRUST
@@ -670,12 +743,19 @@ function isAmmoSpinning()
 	return world.player.ammoSpinStartTime ~= nil
 end
 
+function playerInputDead( player )
+	if now() > player.stateStartTime + 2.0 and ( btnp( 5 ) or btnp( 4 )) then
+		createWorld()
+	end
+end
+
 function playerUpdate( player )
 	local stateInputFunctions = {
 		initial  = playerInputInitial,
 		walking  = playerInputWalking,
 		shooting = playerInputShooting,
 		ending   = playerInputEnding,
+		dead     = playerInputDead,
 	}
 
 	local stateCleanupFunctions = {
@@ -743,8 +823,38 @@ function playerLeaveShootingState()
 	world.player.stateStartTime = now()
 end
 
+function creatureKill( creature )
+	creature.state = 'dead'
+	if creature.type.dead.sound ~= nil then
+		sfxm( creature.type.dead.sound )
+	end
+end
+
+function creatureTakeDamage( creature )
+	if creature.state == 'active' or creature.state == 'attacking' or creature.state == 'fleeing' then
+		creature.health = creature.health - 1
+		if creature.health <= 0 then
+			creatureKill( creature )
+		end
+	end
+end
+
+function checkingShootingCollision( player )
+	local rayOrig = playerGunPos()
+	local rayDir = playerArmNorm()
+
+	for _, creature in ipairs( world.creatures ) do
+		if creature.state == 'active' or creature.state == 'attacking' or creature.state == 'fleeing' then
+			local bounds = creatureBounds( creature )
+			if rectOverlapsRay( bounds, rayOrig, rayDir ) then
+				creatureTakeDamage( creature )
+			end
+		end
+	end
+end
+
 function playerActuallyShoot( player )
-	-- TODO
+	
 	world.player.numLoadedBullets = world.player.numLoadedBullets - 1
 
 	world.player.firedStartTime = now()
@@ -755,6 +865,7 @@ function playerActuallyShoot( player )
 	world.flashAmmoDuration = 0.65
 	world.flashAmmoColor = 0xff404000
 
+	checkingShootingCollision( player )
 
 	-- sfxm TODO
 
@@ -797,7 +908,8 @@ end
 
 local CREATURE_TYPES = {
 	wolf = {
-		size = { x = 16, y = 16 },
+		health = 2,
+		size = { x = 64, y = 32 },
 		spawn = {
 			offset = vec2:new( 300, 0 ),
 			radius = 0,
@@ -817,6 +929,7 @@ local CREATURE_TYPES = {
 			attack = {},
 		},
 		emerging = {
+			sound = nil,
 			duration = 1.0,
 		},
 		active = {
@@ -825,8 +938,13 @@ local CREATURE_TYPES = {
 			movementDuration = 1.5,
 		},
 		attacking = {
+			sound = nil,
 			movementDuration = 1.25,
+			damage = 1,
 		},
+		dead = {
+			sound = nil,
+		}
 	}
 }
 
@@ -835,7 +953,8 @@ function createCreature( type, x )
 		type = type,
 		state = 'dormant',
 		pos = vec2:new( x, 0 ),
-		numHints = randInt( 1, type.hint.countMax + 1 )
+		numHints = randInt( 1, type.hint.countMax + 1 ),
+		health = type.health or 1
 	}
 
 	creature.spawnPos = creature.pos + creature.type.spawn.offset + randVec( creature.type.spawn.radius )
@@ -881,8 +1000,8 @@ function creatureEmerge( creature )
 	creature.pos = creature.spawnPos
 	creature.anim = creature.type.anims.emerging
 
-	if creature.type.spawn.sound then
-		sfxm( creature.type.spawn.sound )
+	if creature.type.emerging.sound then
+		sfxm( creature.type.emerging.sound )
 	end
 end
 
@@ -955,7 +1074,9 @@ function creatureUpdateAttacking( creature )
 	creatureMoveTowardStop( creature )
 
 	-- COLLISION
-	-- TODO
+	if isCreatureOverlappingPlayer( creature ) then
+		playerTakeDamage( creature.type.attacking.damage )
+	end
 
 	if creature.startMovementTime ~= nil and now() >= creature.startMovementTime + creature.movementDuration then
 		creature.state = 'fleeing'
@@ -964,7 +1085,7 @@ function creatureUpdateAttacking( creature )
 end
 
 function creatureUpdateFleeing( creature )
-	creature.pos.x = creature.pos.x - 2
+	creature.pos.x = creature.pos.x - 1.5
 	if creature.pos.x <= world.viewX - creature.type.size.x - 16 then
 		tableRemoveValue( world.creatures, creature )
 	end
@@ -972,10 +1093,10 @@ end
 
 function creatureBounds( creature )
 	return {
-		l = creature.pos.x,
-		t = creature.pos.y,
-		r = creature.pos.x + creature.type.size.x,
-		b = creature.pos.y + creature.type.size.y
+		left = creature.pos.x,
+		top = creature.pos.y - creature.type.size.y,
+		right = creature.pos.x + creature.type.size.x,
+		bottom = creature.pos.y
 	}
 end
 
@@ -987,27 +1108,27 @@ function creatureDraw( creature )
 		end,
 		emerging = function()
 			local bounds = creatureBounds( creature )
-			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF00FF )
+			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0xFFFF00FF )
 		end,
 		active =  function()
 			local bounds = creatureBounds( creature )
-			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF0000 )
+			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0xFFFF0000 )
 
 			rectfill( creature.stopLocation.x, creature.stopLocation.y, creature.stopLocation.x + 4, creature.stopLocation.y + 4, 0xFF0000FF )
 		end,
 		attacking = function()
 			local bounds = creatureBounds( creature )
-			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFF800000 )
+			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0xFF800000 )
 
 			rectfill( creature.stopLocation.x, creature.stopLocation.y, creature.stopLocation.x + 4, creature.stopLocation.y + 4, 0xFF00FFFF )
 		end,
 		fleeing = function()
 			local bounds = creatureBounds( creature )
-			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0x80808000 )
+			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0x80808000 )
 		end,
 		dead = function()
 			local bounds = creatureBounds( creature )
-			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0x80000000 )
+			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0x80000000 )
 		end
 	}
 
@@ -1015,6 +1136,10 @@ function creatureDraw( creature )
 	if func ~= nil then
 		func( creature )
 	end
+end
+
+function creatureUpdateDead( creature )
+	creature.pos.y = math.min( 0, creature.pos.y + 1 )
 end
 
 function creatureUpdate( creature )
@@ -1025,7 +1150,7 @@ function creatureUpdate( creature )
 		active =  creatureUpdateActive,
 		attacking = creatureUpdateAttacking,
 		fleeing = creatureUpdateFleeing,
-		dead = function() end
+		dead = creatureUpdateDead
 	}
 
 	local func = stateFunctions[ creature.state ]
@@ -1046,8 +1171,6 @@ function drawCreatures()
 	end
 end
 
-local MAX_PLAYER_HEALTH = 3
-
 function createWorld()
 	world = {
 		viewX = 0,
@@ -1065,8 +1188,9 @@ function createWorld()
 		}
 	}
 
-	createCreature( CREATURE_TYPES.wolf, 100 )
-	createCreature( CREATURE_TYPES.wolf, 400 )
+	for i = 0, 12 do
+		createCreature( CREATURE_TYPES.wolf, 100 + 300 * i )
+	end
 end
 
 createWorld()
@@ -1108,7 +1232,7 @@ function printCentered( text, x, y, color, font, printFn )
 end
 
 function playerDraw( player )
-	rectfill( player.x, -30, player.x + 10, 0 )
+	rectfill( player.x, -PLAYER_HEIGHT, player.x + PLAYER_WIDTH, 0 )
 end
 
 function viewBounds()
@@ -1292,6 +1416,10 @@ function drawHUD()
 				spr( spriteIndex( 8, 22 ), BUTTON_X_HINT_X + 32, BUTTON_LABELS_TOP_Y, 4, 1 ) -- BUTTON X LABEL
 			end,
 			ending = function()
+				-- TODO
+			end,
+			dead = function()
+				-- TODO
 			end
 		}
 		playerStateDrawFunctions[ world.player.state ]()
