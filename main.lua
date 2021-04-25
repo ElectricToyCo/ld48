@@ -822,10 +822,10 @@ local CREATURE_TYPES = {
 		active = {
 			numStopsRange = { min = 2, max = 2 },
 			movementScales = vec2:new( 50, 0 ),
-			movementDuration = 0.5
+			movementDuration = 1.5,
 		},
 		attacking = {
-			movementDuration = 1.0,
+			movementDuration = 1.25,
 		},
 	}
 }
@@ -887,7 +887,7 @@ function creatureEmerge( creature )
 end
 
 function creatureUpdateHinting( creature )
-	if world.player.x >= creature.spawnPos.x - 100 then
+	if world.player.x >= creature.spawnPos.x - 200 then
 		creatureEmerge( creature )
 	else
 		if now() >= creature.nextHintActionTime then
@@ -927,7 +927,7 @@ function creatureStartAttacking( creature )
 	if creature.type.attacking.pickDestination ~= nil then
 		creature.stopLocation = creature.type.attacking.pickDestination( creature )
 	else
-		creature.stopLocation = vec2:new( world.player.x, 0 )
+		creature.stopLocation = vec2:new( world.player.x - 50, 0 )
 	end
 
 	creature.startMovementTime = now()
@@ -1004,7 +1004,11 @@ function creatureDraw( creature )
 		fleeing = function()
 			local bounds = creatureBounds( creature )
 			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0x80808000 )
-		end	
+		end,
+		dead = function()
+			local bounds = creatureBounds( creature )
+			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0x80000000 )
+		end
 	}
 
 	local func = stateFunctions[ creature.state ]
@@ -1021,6 +1025,7 @@ function creatureUpdate( creature )
 		active =  creatureUpdateActive,
 		attacking = creatureUpdateAttacking,
 		fleeing = creatureUpdateFleeing,
+		dead = function() end
 	}
 
 	local func = stateFunctions[ creature.state ]
@@ -1061,6 +1066,7 @@ function createWorld()
 	}
 
 	createCreature( CREATURE_TYPES.wolf, 100 )
+	createCreature( CREATURE_TYPES.wolf, 400 )
 end
 
 createWorld()
