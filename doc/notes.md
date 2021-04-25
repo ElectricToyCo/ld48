@@ -14,32 +14,33 @@ X HUD: Controls display
 X Shooting initial timeout/delay
 X Bullet aiming w/ display
 X Bullet firing display
-- Encounters, creature system
-- Damage to creatures
-- Player damage
-- Creature: Squirrel
-- Player death, restart
+X Encounters, creature system
+X Damage to creatures
+X Player damage
+X Player death, restart
+X HUD: Ammo display blur, timeout
+X Failed button press flashes (shoot, reload)
+- Creature: wolf (two damage)
 
 - Health pickup (creatures)
 - Ammo pickup
 - Vegetation
 - Sky
 - Depth/night progression
+- Creature: Squirrel/tutorial
 - Creature: Bird
 - Creature: Owl (attacking)
 - Creature: fox (attacking)
 - Creature: main boss
 - Creature: main boss: foreshadowing
-- Creature: wolf (two damage)
 - Creature: deer (one damage, jumps; full health)
 - Music plays only when walking
 - Narrative, poetry, reflections
 - Tutorial elements
 - Title/Opening
-- Ending
+- Ending: good
+- Ending: death
 - Restart
-- HUD: Ammo display blur, timeout
-- Failed button press flashes (shoot, reload)
 
 # Sequence
 

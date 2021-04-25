@@ -213,7 +213,7 @@ local WHITE = 0xFFFFFFFF
 local YELLOW = 0xFFE8C170
 local YELLOW_ORANGE = 0xFFDE9E41
 
-local SPRITE_SHEET_PIXELS_X = 512
+local SPRITE_SHEET_PIXELS_X = 1024
 local PIXELS_PER_TILE = 16
 local TILES_X = SPRITE_SHEET_PIXELS_X // PIXELS_PER_TILE
 
@@ -686,7 +686,7 @@ end
 
 local PLAYER_HEIGHT = 30
 local PLAYER_WIDTH = 10
-local MAX_PLAYER_HEALTH = 3
+local MAX_PLAYER_HEALTH = 5
 
 
 function playerBounds()
@@ -709,11 +709,20 @@ function playerDie()
 	-- TODO
 end
 
-function playerTakeDamage( amount )
-	if world.player.health > 0 then
-		world.player.health = clamp( world.player.health - amount, 0, MAX_PLAYER_HEALTH )
+local PLAYER_INVULNERABLE_TIME = 2.0
 
-		if world.player.health <= 0 then
+function playerIsInvulnerable( player )
+	return player.state ~= 'dead' and player.invulnerableEndTime ~= nil and now() < player.invulnerableEndTime
+end
+
+function playerTakeDamage( amount )
+	local player = world.player
+	if not playerIsInvulnerable( player ) and player.health > 0 then
+		player.health = clamp( player.health - amount, 0, MAX_PLAYER_HEALTH )
+
+		player.invulnerableEndTime = now() + PLAYER_INVULNERABLE_TIME
+
+		if player.health <= 0 then
 			playerDie()
 		end
 
@@ -724,7 +733,9 @@ end
 
 function playerUpdateSimulation( player )
 
-	player.velX = player.velX + player.thrustX * PLAYER_ACCEL_PER_THRUST
+	local thrustToAccel = ( playerIsReloading() and 0.25 or 1.0 ) * PLAYER_ACCEL_PER_THRUST
+
+	player.velX = player.velX + player.thrustX * thrustToAccel
 	player.velX = player.velX - ( player.velX * PLAYER_DRAG )
 	player.x = player.x + player.velX
 
@@ -740,7 +751,7 @@ function playerUpdateSimulation( player )
 end
 
 function isAmmoSpinning()
-	return world.player.ammoSpinStartTime ~= nil
+	return world.player.ammoSpinStartTime ~= nil and now() < world.player.ammoSpinStartTime + world.player.ammoSpinDuration
 end
 
 function playerInputDead( player )
@@ -786,6 +797,10 @@ function playerUpdate( player )
 end
 
 local MAX_LOADED_BULLETS = 4
+
+function playerIsReloading()
+	return isAmmoSpinning()
+end
 
 function playerReload()
 	if not playerMayReload() then
@@ -906,9 +921,48 @@ function viewUpdate()
 	world.viewX = lerp( world.viewX, math.max( world.viewX, world.player.x - VIEW_LEFT_OFFSET ), VIEW_LERP )
 end
 
+-- ANIMATION
+
+function createAnimRange( startTileX, startTileY, frameCount, frameTilesX, frameTilesY )
+	local arr = {}
+	for i = 0, frameCount do
+		local sprite = spriteIndex( startTileX, startTileY )
+		table.insert( arr, sprite )
+		
+		startTileX = startTileX + frameTilesX
+		if startTileX >= TILES_X then
+			startTileX = 0
+			startTileY = startTileY + frameTilesY
+		end
+	end
+
+	return arr
+end
+
+local ANIMATIONS = {
+	wolf = {
+		idle = {
+			hz = 12,
+			frames = createAnimRange( 0, 8, 24, 4, 4 )
+		},
+	},
+}
+
+function currentFrame( time, animation )
+	local hz = animation.hz
+	local notionalFrame = math.floor( time * hz )
+	local nFrames = #animation.frames
+	local frameIndex = notionalFrame % nFrames
+
+	return animation.frames[ frameIndex + 1 ]
+end
+
+-- CREATURES
+
 local CREATURE_TYPES = {
 	wolf = {
 		health = 2,
+		spriteSize = { x = 4, y = 4 },
 		size = { x = 64, y = 32 },
 		spawn = {
 			offset = vec2:new( 300, 0 ),
@@ -920,13 +974,13 @@ local CREATURE_TYPES = {
 			radius = 40,
 			delay = { min = 2.0, max = 4.0 },
 			sound = nil,
-			anim = nil,
+			anim = ANIMATIONS.wolf.idle,
 		},
 		anims = {
-			emerge = {},
-			idle = {},
-			move = {},
-			attack = {},
+			emerge = ANIMATIONS.wolf.idle,
+			idle = ANIMATIONS.wolf.idle,
+			move = ANIMATIONS.wolf.idle,
+			attack = ANIMATIONS.wolf.idle,
 		},
 		emerging = {
 			sound = nil,
@@ -940,7 +994,7 @@ local CREATURE_TYPES = {
 		attacking = {
 			sound = nil,
 			movementDuration = 1.25,
-			damage = 1,
+			damage = 2,
 		},
 		dead = {
 			sound = nil,
@@ -1022,7 +1076,9 @@ end
 
 function creatureUpdateEmerging( creature )
 	if now() - creature.stateStartTime >= creature.type.emerging.duration then
+		-- go active
 		creature.state = 'active'
+		creature.anim = creature.type.anims.idle	-- TODO
 		creature.stateStartTime = now()
 		creature.numStops = math.min( 1, randInt( creature.type.active.numStopsRange.min, creature.type.active.numStopsRange.max + 1 ))
 		creatureMoveToNextStop( creature )
@@ -1100,6 +1156,14 @@ function creatureBounds( creature )
 	}
 end
 
+function creatureAnimDraw( creature, pos, flipX, flipY, color, additive )
+	if creature.anim == nil then return end
+
+	local sprite = currentFrame( now(), creature.anim )
+
+	spr( sprite, pos.x, pos.y - creature.type.spriteSize.y * PIXELS_PER_TILE, creature.type.spriteSize.x, creature.type.spriteSize.y, flipX, flipY, color, additive )
+end
+
 function creatureDraw( creature )
 	local stateFunctions = {
 		dormant = nil,
@@ -1111,8 +1175,7 @@ function creatureDraw( creature )
 			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0xFFFF00FF )
 		end,
 		active =  function()
-			local bounds = creatureBounds( creature )
-			rectfill( bounds.left, bounds.top, bounds.right, bounds.bottom, 0xFFFF0000 )
+			creatureAnimDraw( creature, creature.pos )
 
 			rectfill( creature.stopLocation.x, creature.stopLocation.y, creature.stopLocation.x + 4, creature.stopLocation.y + 4, 0xFF0000FF )
 		end,
@@ -1232,7 +1295,15 @@ function printCentered( text, x, y, color, font, printFn )
 end
 
 function playerDraw( player )
+	if playerIsInvulnerable( player ) then
+		-- flicker
+		if math.sin( now() * math.pi * 16 ) > 0 then
+			return
+		end
+	end
+
 	rectfill( player.x, -PLAYER_HEIGHT, player.x + PLAYER_WIDTH, 0 )
+
 end
 
 function viewBounds()
