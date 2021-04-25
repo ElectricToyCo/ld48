@@ -747,6 +747,7 @@ function playerActuallyShoot( player )
 	-- TODO
 	world.player.numLoadedBullets = world.player.numLoadedBullets - 1
 
+	world.player.firedStartTime = now()
 	world.player.ammoSpinStartTime = now()
 	world.player.ammoSpinDuration = 0.15
 
@@ -772,6 +773,8 @@ end
 
 function playerCancelShootingState()
 	if world.player.state ~= 'shooting' then return end
+
+	world.player.firedStartTime = nil
 	playerLeaveShootingState()
 end
 
@@ -792,11 +795,191 @@ function viewUpdate()
 	world.viewX = lerp( world.viewX, math.max( world.viewX, world.player.x - VIEW_LEFT_OFFSET ), VIEW_LERP )
 end
 
+local CREATURE_TYPES = {
+	wolf = {
+		size = { x = 16, y = 16 },
+		hint = {
+			countMax = 2,
+			offset = vec2:new( 100, -50 ),
+			radius = 20,
+			delay = { min = 2.0, max = 4.0 },
+			sound = nil,
+			anim = nil,
+		},
+		spawn = {
+			offset = vec2:new( 100, 0 ),
+			radius = 0,
+		},
+		anims = {
+			emerge = {},
+			idle = {},
+			move = {},
+			attack = {},
+		},
+		emerging = {
+			duration = 1.0,
+		},
+		active = {
+			numStopsRange = { min = 2, max = 2 },
+			movementScales = vec2:new( 50, 0 ),
+			movementDuration = 0.5
+		}
+	}
+}
+
+function createCreature( type, x )
+	local creature = {
+		type = type,
+		state = 'dormant',
+		pos = vec2:new( x, 0 ),
+		numHints = randInt( 1, type.hint.countMax + 1 )
+	}
+	
+	table.insert( world.creatures, creature )
+	return creature
+end
+
+function randVec( radius )
+	local v = vec2:new( radius, 0 )
+	v:rotate( randInRange( 0, 2.0 * math.pi ))
+	return v
+end
+
+function creatureStartHint( creature )
+	creature.numHints = creature.numHints - 1
+
+	if creature.type.hint.sound then
+		sfxm( creature.type.hint.sound )
+	end
+
+	creature.anim = creature.type.hint.anim		-- nil fine
+
+	creature.hintPos = creature.pos + creature.type.hint.offset + randVec( creature.type.hint.radius )
+
+	local delayRange = creature.type.hint.delay
+	local delay = randInRange( delayRange.min, delayRange.max )
+	creature.nextHintActionTime = now() + delay
+end
+
+function creatureUpdateDormant( creature )
+	if world.player.x >= creature.pos.x then
+		creature.state = 'hinting'
+		creature.stateStartTime = now()
+		creatureStartHint( creature )
+	end
+end
+
+function creatureEmerge( creature )
+	creature.state = 'emerging'
+	creature.stateStartTime = now()
+
+	creature.pos = creature.pos + creature.type.spawn.offset + randVec( creature.type.spawn.radius )
+	creature.anim = creature.type.anims.emerging
+
+	if creature.type.spawn.sound then
+		sfxm( creature.type.spawn.sound )
+	end
+end
+
+function creatureUpdateHinting( creature )
+	if world.player.x >= creature.pos.x + 150 then
+		creatureEmerge( creature )
+	else
+		if now() >= creature.nextHintActionTime then
+			if creature.numHints > 0 then
+				-- hint again
+				creatureStartHint( creature )
+			else
+				creatureEmerge( creature )
+			end
+		end
+	end
+end
+
+function creatureUpdateEmerging( creature )
+	if now() - creature.stateStartTime >= creature.type.emerging.duration then
+		creature.state = 'active'
+		creature.stateStartTime = now()
+		creature.numStops = randInt( creature.active.numStopsRange.min, creature.active.numStopsRange.max )
+		creatureMoveToNextStop( creature )
+	end
+end
+
+function creatureMoveToNextStop( creature )
+	
+	creature.stopLocation = creature.pos + randVec( 1.0 ) * creature.type.active.movementScales
+	creature.startMovementTime = now()
+	creature.movementDuration = creature.type.active.movementDuration
+
+	creature.numStops = creature.numStops - 1
+end
+
+function creatureUpdateActive( creature )
+	if creature.startMovementTime + creature.movementDuration >= now() then
+		if creature.numStops > 0 then
+			creatureMoveToNextStop( creature )
+		else
+			creature.state = 'attacking'
+			creature.stateStartTime = now()
+		end
+	else
+		creature.pos = lerp( creature.pos, creature.stopLocation, 0.05 )	-- TODO time-based, easing, spline
+	end
+end
+
+function creatureUpdateAttacking( creature )
+	-- TODO
+	-- delete when gone
+end
+
+function creatureBounds( creature )
+	return {
+		l = creature.pos.x,
+		t = creature.pos.y,
+		r = creature.pos.x + creature.type.size.x,
+		b = creature.pos.y + creature.type.size.y
+	}
+end
+
+function creatureDraw( creature )
+	-- TODO
+	local bounds = creatureBounds( creature )
+	rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF0000)
+end
+
+function creatureUpdate( creature )
+	local stateFunctions = {
+		dormant = creatureUpdateDormant,
+		hinting = creatureUpdateHinting,
+		emerged = creatureUpdateEmerging,
+		active =  creatureUpdateActive,
+		attacking = creatureUpdateAttacking,
+	}
+
+	local func = stateFunctions[ creature.state ]
+	if func ~= nil then
+		func( creature )
+	end
+end
+
+function updateCreatures()
+	for _, creature in ipairs( world.creatures ) do
+		creatureUpdate( creature )
+	end
+end
+
+function drawCreatures()
+	for _, creature in ipairs( world.creatures ) do
+		creatureDraw( creature )
+	end
+end
+
 local MAX_PLAYER_HEALTH = 3
 
 function createWorld()
-	local world = {
+	world = {
 		viewX = 0,
+		creatures = {},
 		player = {
 			state = 'initial',
 			x = -64,
@@ -810,10 +993,10 @@ function createWorld()
 		}
 	}
 
-	return world
+	createCreature( CREATURE_TYPES.wolf, 100 )
 end
 
-world = createWorld()
+createWorld()
 
 -- UPDATING!!!
 
@@ -822,6 +1005,7 @@ function update()
 	ticks = ticks + 1
 
 	playerUpdate( world.player )
+	updateCreatures()
 	viewUpdate()
 end
 
@@ -923,7 +1107,7 @@ function drawInWorldUI()
 	end
 
 	function drawWalkingUI()
-		if world.player.stateStartTime ~= nil then
+		if world.player.firedStartTime ~= nil then
 			local thinColor = flashOnce( 1.2, WHITE, 0x00000000, playerDurationInState() )
 			local thickColor = flashOnce( 0.65, 0xFFcccccc, 0x00000000, playerDurationInState() )
 			local gun = playerGunPos()
@@ -1050,6 +1234,7 @@ function draw()
 	camera( world.viewX, -GROUND_VIEW_OFFSET_Y )
 	drawFloor()
 	playerDraw( world.player )
+	drawCreatures()
 
 	-- Draw UI
 	drawInWorldUI()

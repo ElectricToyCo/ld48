@@ -11,10 +11,11 @@ X Player movement and controls
 X HUD: Health display
 X HUD: Ammo display
 X HUD: Controls display
-- Shooting initial timeout/delay
-- Bullet aiming w/ display
-- Bullet firing display
+X Shooting initial timeout/delay
+X Bullet aiming w/ display
+X Bullet firing display
 - Encounters, creature system
+- Damage to creatures
 - Player damage
 - Creature: Squirrel
 - Player death, restart
