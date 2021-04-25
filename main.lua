@@ -798,17 +798,17 @@ end
 local CREATURE_TYPES = {
 	wolf = {
 		size = { x = 16, y = 16 },
+		spawn = {
+			offset = vec2:new( 300, 0 ),
+			radius = 0,
+		},
 		hint = {
 			countMax = 2,
-			offset = vec2:new( 100, -50 ),
-			radius = 20,
+			offset = vec2:new( 0, -50 ),
+			radius = 40,
 			delay = { min = 2.0, max = 4.0 },
 			sound = nil,
 			anim = nil,
-		},
-		spawn = {
-			offset = vec2:new( 100, 0 ),
-			radius = 0,
 		},
 		anims = {
 			emerge = {},
@@ -823,7 +823,10 @@ local CREATURE_TYPES = {
 			numStopsRange = { min = 2, max = 2 },
 			movementScales = vec2:new( 50, 0 ),
 			movementDuration = 0.5
-		}
+		},
+		attacking = {
+			movementDuration = 1.0,
+		},
 	}
 }
 
@@ -834,6 +837,8 @@ function createCreature( type, x )
 		pos = vec2:new( x, 0 ),
 		numHints = randInt( 1, type.hint.countMax + 1 )
 	}
+
+	creature.spawnPos = creature.pos + creature.type.spawn.offset + randVec( creature.type.spawn.radius )
 	
 	table.insert( world.creatures, creature )
 	return creature
@@ -854,7 +859,7 @@ function creatureStartHint( creature )
 
 	creature.anim = creature.type.hint.anim		-- nil fine
 
-	creature.hintPos = creature.pos + creature.type.hint.offset + randVec( creature.type.hint.radius )
+	creature.hintPos = creature.spawnPos + creature.type.hint.offset + randVec( creature.type.hint.radius )
 
 	local delayRange = creature.type.hint.delay
 	local delay = randInRange( delayRange.min, delayRange.max )
@@ -873,7 +878,7 @@ function creatureEmerge( creature )
 	creature.state = 'emerging'
 	creature.stateStartTime = now()
 
-	creature.pos = creature.pos + creature.type.spawn.offset + randVec( creature.type.spawn.radius )
+	creature.pos = creature.spawnPos
 	creature.anim = creature.type.anims.emerging
 
 	if creature.type.spawn.sound then
@@ -882,7 +887,7 @@ function creatureEmerge( creature )
 end
 
 function creatureUpdateHinting( creature )
-	if world.player.x >= creature.pos.x + 150 then
+	if world.player.x >= creature.spawnPos.x - 100 then
 		creatureEmerge( creature )
 	else
 		if now() >= creature.nextHintActionTime then
@@ -900,36 +905,69 @@ function creatureUpdateEmerging( creature )
 	if now() - creature.stateStartTime >= creature.type.emerging.duration then
 		creature.state = 'active'
 		creature.stateStartTime = now()
-		creature.numStops = randInt( creature.active.numStopsRange.min, creature.active.numStopsRange.max )
+		creature.numStops = math.min( 1, randInt( creature.type.active.numStopsRange.min, creature.type.active.numStopsRange.max + 1 ))
 		creatureMoveToNextStop( creature )
 	end
 end
 
 function creatureMoveToNextStop( creature )
-	
-	creature.stopLocation = creature.pos + randVec( 1.0 ) * creature.type.active.movementScales
+	local r = randVec( 1.0 )
+	creature.stopLocation = creature.pos + r * creature.type.active.movementScales
 	creature.startMovementTime = now()
 	creature.movementDuration = creature.type.active.movementDuration
 
 	creature.numStops = creature.numStops - 1
 end
 
+function creatureStartAttacking( creature )
+	creature.state = 'attacking'
+	creature.stateStartTime = now()
+
+	creature.stopLocation = nil
+	if creature.type.attacking.pickDestination ~= nil then
+		creature.stopLocation = creature.type.attacking.pickDestination( creature )
+	else
+		creature.stopLocation = vec2:new( world.player.x, 0 )
+	end
+
+	creature.startMovementTime = now()
+	creature.movementDuration = creature.type.attacking.movementDuration
+end
+
+function creatureMoveTowardStop( creature )
+	if creature.stopLocation == nil then return end
+	creature.pos = lerp( creature.pos, creature.stopLocation, 0.05 )	-- TODO time-based, easing, spline
+end
+
 function creatureUpdateActive( creature )
-	if creature.startMovementTime + creature.movementDuration >= now() then
+	if creature.startMovementTime ~= nil and now() >= creature.startMovementTime + creature.movementDuration then
 		if creature.numStops > 0 then
 			creatureMoveToNextStop( creature )
 		else
-			creature.state = 'attacking'
-			creature.stateStartTime = now()
+			creatureStartAttacking( creature )
 		end
 	else
-		creature.pos = lerp( creature.pos, creature.stopLocation, 0.05 )	-- TODO time-based, easing, spline
+		creatureMoveTowardStop( creature )
 	end
 end
 
 function creatureUpdateAttacking( creature )
+	creatureMoveTowardStop( creature )
+
+	-- COLLISION
 	-- TODO
-	-- delete when gone
+
+	if creature.startMovementTime ~= nil and now() >= creature.startMovementTime + creature.movementDuration then
+		creature.state = 'fleeing'
+		creature.stopLocation = nil
+	end
+end
+
+function creatureUpdateFleeing( creature )
+	creature.pos.x = creature.pos.x - 2
+	if creature.pos.x <= world.viewX - creature.type.size.x - 16 then
+		tableRemoveValue( world.creatures, creature )
+	end
 end
 
 function creatureBounds( creature )
@@ -942,18 +980,47 @@ function creatureBounds( creature )
 end
 
 function creatureDraw( creature )
-	-- TODO
-	local bounds = creatureBounds( creature )
-	rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF0000)
+	local stateFunctions = {
+		dormant = nil,
+		hinting = function()
+			rectfill( creature.hintPos.x, creature.hintPos.y, creature.hintPos.x + 10, creature.hintPos.y + 10, 0xFFFFFF00 )
+		end,
+		emerging = function()
+			local bounds = creatureBounds( creature )
+			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF00FF )
+		end,
+		active =  function()
+			local bounds = creatureBounds( creature )
+			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFFFF0000 )
+
+			rectfill( creature.stopLocation.x, creature.stopLocation.y, creature.stopLocation.x + 4, creature.stopLocation.y + 4, 0xFF0000FF )
+		end,
+		attacking = function()
+			local bounds = creatureBounds( creature )
+			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0xFF800000 )
+
+			rectfill( creature.stopLocation.x, creature.stopLocation.y, creature.stopLocation.x + 4, creature.stopLocation.y + 4, 0xFF00FFFF )
+		end,
+		fleeing = function()
+			local bounds = creatureBounds( creature )
+			rectfill( bounds.l, bounds.t, bounds.r, bounds.b, 0x80808000 )
+		end	
+	}
+
+	local func = stateFunctions[ creature.state ]
+	if func ~= nil then
+		func( creature )
+	end
 end
 
 function creatureUpdate( creature )
 	local stateFunctions = {
 		dormant = creatureUpdateDormant,
 		hinting = creatureUpdateHinting,
-		emerged = creatureUpdateEmerging,
+		emerging = creatureUpdateEmerging,
 		active =  creatureUpdateActive,
 		attacking = creatureUpdateAttacking,
+		fleeing = creatureUpdateFleeing,
 	}
 
 	local func = stateFunctions[ creature.state ]
